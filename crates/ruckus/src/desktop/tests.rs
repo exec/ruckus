@@ -45,6 +45,116 @@ fn draw(cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn unchanged_snapshots_skip_reconciliation_and_keep_the_history_cache(cx: &mut TestAppContext) {
+    let (view, mut window) = desktop(cx, 900., 640.);
+    window.update(|_, cx| {
+        view.update(cx, |desktop, _| {
+            connected(desktop);
+            desktop.model.push("#ruckus", "<friend> retained history");
+            let snapshot = desktop.snapshot.clone();
+            assert!(desktop.sync_snapshot(snapshot.clone(), true, false));
+            desktop.sync_message_list();
+            let cache = desktop.list_messages.clone();
+            let epoch = desktop.model.history_epoch();
+            // This is a deterministic work-count assertion, not a timing
+            // benchmark: all 1,000 idle polls must skip model reconciliation.
+            let invalidations = (0..1_000)
+                .filter(|_| desktop.sync_snapshot(snapshot.clone(), true, false))
+                .count();
+            assert_eq!(invalidations, 0);
+            desktop.sync_message_list();
+            assert!(Arc::ptr_eq(&cache, &desktop.list_messages));
+            assert_eq!(epoch, desktop.model.history_epoch());
+        });
+    });
+}
+
+#[gpui::test]
+fn snapshot_only_changes_invalidate_members_topics_and_conversations(cx: &mut TestAppContext) {
+    let (view, mut window) = desktop(cx, 900., 640.);
+    window.update(|_, cx| {
+        view.update(cx, |desktop, _| {
+            connected(desktop);
+            let original = desktop.snapshot.clone();
+            desktop.sync_snapshot(original.clone(), true, false);
+            desktop.sync_message_list();
+            let cache = desktop.list_messages.clone();
+            let mut updated = original.as_ref().clone();
+            for line in [
+                ":server 332 tester #ruckus :A replacement topic",
+                ":newcomer!u@host JOIN #ruckus",
+                ":tester!u@host JOIN #new",
+            ] {
+                updated.apply(&Message::parse(line).unwrap());
+            }
+            let updated = Arc::new(updated);
+            assert!(desktop.sync_snapshot(updated.clone(), true, false));
+            assert_eq!(desktop.model.status, "Connected");
+            assert_eq!(desktop.model.nick, "tester");
+            assert_eq!(
+                desktop.snapshot.channel("#ruckus").unwrap().members.len(),
+                3
+            );
+            assert_eq!(
+                desktop.snapshot.channel("#ruckus").unwrap().topic.text,
+                "A replacement topic"
+            );
+            assert!(desktop.model.buffers.contains_key("#new"));
+            assert!(!desktop.sync_snapshot(updated, true, false));
+            desktop.sync_message_list();
+            assert!(Arc::ptr_eq(&cache, &desktop.list_messages));
+            assert_eq!(original.channel("#ruckus").unwrap().members.len(), 2);
+        });
+    });
+    draw(&mut window);
+}
+
+#[gpui::test]
+fn lifecycle_changes_reconcile_even_when_snapshot_identity_is_unchanged(cx: &mut TestAppContext) {
+    let (view, mut window) = desktop(cx, 900., 640.);
+    window.update(|_, cx| {
+        view.update(cx, |desktop, _| {
+            let snapshot = Arc::new(State::new("tester"));
+            assert!(desktop.sync_snapshot(snapshot.clone(), false, false));
+            assert_eq!(desktop.model.status, "Connecting…");
+            assert!(desktop.sync_snapshot(snapshot.clone(), true, false));
+            assert!(desktop.model.connected);
+            assert_eq!(desktop.model.status, "Connected");
+            assert!(desktop.sync_snapshot(snapshot.clone(), true, true));
+            assert!(!desktop.model.connected);
+            assert_eq!(desktop.model.status, "Disconnected");
+            assert!(!desktop.sync_snapshot(snapshot, true, true));
+        });
+    });
+}
+
+#[gpui::test]
+fn unchanged_snapshot_restores_identity_after_older_fifo_events(cx: &mut TestAppContext) {
+    let (view, mut window) = desktop(cx, 900., 640.);
+    window.update(|_, cx| {
+        view.update(cx, |desktop, _| {
+            let snapshot = Arc::new(State::new("new_nick"));
+            desktop.sync_snapshot(snapshot.clone(), true, false);
+            desktop.model.receive_message(
+                &Message::parse(":old_nick!u@host PRIVMSG friend :outgoing echo").unwrap(),
+                &[],
+                "old_nick",
+            );
+            assert_eq!(desktop.model.nick, "old_nick");
+            assert!(desktop.model.buffers.contains_key("friend"));
+            assert!(desktop.sync_snapshot(snapshot.clone(), true, false));
+            assert_eq!(desktop.model.nick, "new_nick");
+            assert!(!desktop.sync_snapshot(snapshot.clone(), true, false));
+            desktop.sync_snapshot(snapshot.clone(), true, true);
+            desktop.model.registered("new_nick".into());
+            assert!(desktop.sync_snapshot(snapshot, true, true));
+            assert!(!desktop.model.connected);
+            assert_eq!(desktop.model.status, "Disconnected");
+        });
+    });
+}
+
+#[gpui::test]
 fn case_mapping_merge_invalidates_history_even_when_counters_alias(cx: &mut TestAppContext) {
     let (view, mut window) = desktop(cx, 900., 640.);
     window.update(|_, cx| {

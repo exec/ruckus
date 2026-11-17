@@ -25,6 +25,34 @@ pub(crate) struct MessageRow {
     pub body: String,
 }
 
+/// Composer guidance describes only available actions, never implied delivery.
+pub(crate) fn composer_guidance(
+    connected: bool,
+    connecting: bool,
+    is_network: bool,
+) -> (&'static str, Option<&'static str>) {
+    if connected {
+        (
+            if is_network {
+                "Start with /join #channel or /msg nick message"
+            } else {
+                "Enter to send · /join #channel · /msg nick message · /part #channel · /nick · /quit"
+            },
+            None,
+        )
+    } else if connecting {
+        (
+            "Waiting for registration. Your draft stays here.",
+            Some("View connection"),
+        )
+    } else {
+        (
+            "Offline · Open Connection to send. Settings keep your draft.",
+            Some("Open Connection"),
+        )
+    }
+}
+
 /// Empty history is not evidence of peers, membership, or a live connection.
 pub(crate) fn empty_conversation_copy(
     is_network: bool,
@@ -149,6 +177,33 @@ pub(crate) fn author_color(author: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composer_guidance_exposes_available_actions_without_implying_delivery() {
+        for network in [false, true] {
+            let (hint, action) = composer_guidance(false, false, network);
+            assert!(hint.contains("Offline"));
+            assert!(hint.contains("draft"));
+            assert!(!hint.contains("history"));
+            assert_eq!(action, Some("Open Connection"));
+            let (hint, action) = composer_guidance(false, true, network);
+            assert!(hint.contains("Waiting for registration"));
+            assert_eq!(action, Some("View connection"));
+            let (hint, action) = composer_guidance(true, false, network);
+            assert!(hint.contains("/msg nick message"));
+            assert_eq!(action, None);
+            assert_eq!(hint.contains("Enter to send"), !network);
+            if !network {
+                assert!(hint.contains("/part #channel"));
+            }
+            assert!(hint.contains("/join #channel"));
+            // Registration wins if the worker is still present.
+            assert_eq!(
+                composer_guidance(true, true, network),
+                composer_guidance(true, false, network)
+            );
+        }
+    }
 
     #[test]
     fn empty_history_copy_does_not_imply_peers_or_a_connection() {

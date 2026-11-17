@@ -15,6 +15,11 @@ pub(crate) const ACCENT_SURFACE: u32 = 0x2d2842;
 pub(crate) const GREEN: u32 = 0x94d7ad;
 pub(crate) const AMBER: u32 = 0xe8c283;
 
+/// Keep conversation headings, message bodies and the composer on one grid.
+pub(crate) const CONVERSATION_INSET: f32 = 24.;
+/// The brand and conversation sidebar share one column boundary.
+pub(crate) const SIDEBAR_WIDTH: f32 = 220.;
+
 pub(crate) fn install(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     let theme = Theme::global_mut(cx);

@@ -3,8 +3,8 @@
 use super::*;
 use crate::{
     presentation::{
-        MessageRow, RowKind, author_color, author_initial, empty_conversation_copy, message_row,
-        same_author,
+        MessageRow, RowKind, author_color, author_initial, composer_guidance,
+        empty_conversation_copy, message_row, same_author,
     },
     theme as t,
 };
@@ -175,7 +175,7 @@ impl Desktop {
             .border_color(rgb(t::BORDER))
             .child(
                 div()
-                    .w(px(220.))
+                    .w(px(t::SIDEBAR_WIDTH))
                     .flex_shrink_0()
                     .px_5()
                     .flex()
@@ -205,7 +205,7 @@ impl Desktop {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .px_5()
+                    .px(px(t::CONVERSATION_INSET))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -217,7 +217,15 @@ impl Desktop {
                             .text_size(px(12.))
                             .text_ellipsis()
                             .text_color(rgb(t::MUTED))
-                            .child("A little less noise. A little more conversation."),
+                            .child(if self.connection_open {
+                                "Connection settings"
+                            } else if self.model.connected {
+                                "Workspace"
+                            } else if self.client.is_some() {
+                                "Connecting…"
+                            } else {
+                                "Offline workspace"
+                            }),
                     )
                     .child(
                         Button::new("connection-settings")
@@ -312,7 +320,7 @@ impl Desktop {
             .cloned()
             .collect();
         div()
-            .w(px(220.))
+            .w(px(t::SIDEBAR_WIDTH))
             .flex_shrink_0()
             .flex()
             .flex_col()
@@ -576,7 +584,8 @@ impl Desktop {
             .min_w_0()
             .child(
                 div()
-                    .px_6()
+                    .debug_selector(|| "conversation-heading".into())
+                    .px(px(t::CONVERSATION_INSET))
                     .py_4()
                     .border_b_1()
                     .border_color(rgb(t::BORDER))
@@ -606,9 +615,14 @@ impl Desktop {
                                     .child(if !topic.is_empty() {
                                         topic
                                     } else if is_network {
-                                        "The pulse of your connection.".into()
+                                        "Registration, connection notices and command feedback"
+                                            .into()
+                                    } else if channel.is_some() {
+                                        "No current topic available".into()
+                                    } else if self.model.is_channel(&self.model.selected) {
+                                        "Channel history · no current topic available".into()
                                     } else {
-                                        "A little room for a good conversation.".into()
+                                        "Direct conversation".into()
                                     }),
                             ),
                     )
@@ -727,7 +741,7 @@ impl Desktop {
                                     })
                                     .flex_1()
                                     .min_h_0()
-                                    .px_6()
+                                    .px(px(t::CONVERSATION_INSET))
                                     .py_4(),
                                 )
                             }),
@@ -809,14 +823,53 @@ impl Desktop {
     }
 
     fn composer_view(&self, cx: &mut Context<Self>) -> Div {
+        let (guidance, connection_action) = composer_guidance(
+            self.model.connected,
+            self.client.is_some(),
+            self.model.selected == STATUS,
+        );
         div()
+            .debug_selector(|| "composer-area".into())
             .w_full()
-            .px_6()
+            .flex_shrink_0()
+            .px(px(t::CONVERSATION_INSET))
             .pt_3()
             .pb_4()
             .flex()
             .flex_col()
             .gap_2()
+            .when_some(connection_action, |view, action| {
+                view.child(
+                    div()
+                        .debug_selector(|| "composer-connection-state".into())
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .debug_selector(|| "composer-state-hint".into())
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(12.))
+                                .text_color(rgb(t::MUTED))
+                                .child(guidance),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| "composer-connection-action".into())
+                                .flex()
+                                .flex_shrink_0()
+                                .child(
+                                    Button::new("composer-open-connection")
+                                        .label(action)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_connection();
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                )
+            })
             .when(!self.composer_feedback.is_empty(), |view| {
                 view.child(self.feedback_view(&self.composer_feedback, "composer-feedback"))
             })
@@ -849,27 +902,22 @@ impl Desktop {
                     .child(
                         Button::new("send")
                             .primary()
-                            .label("Send  ↑")
+                            .label("Send")
                             .disabled(!self.model.connected)
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),
             )
             .child(
                 div()
+                    .debug_selector(|| "composer-guidance".into())
                     .flex()
                     .flex_wrap()
                     .justify_between()
                     .gap_3()
                     .text_size(px(11.))
                     .text_color(rgb(t::MUTED))
-                    .child(if self.model.connected {
-                        "Enter to send · /join · /msg · /nick · /quit"
-                    } else if self.client.is_some() {
-                        "Waiting for registration. Open Connection to cancel."
-                    } else {
-                        "You're offline. Open Connection to get back to the conversation."
-                    })
-                    .child("Sent = written to connection, not a delivery receipt"),
+                    .when(self.model.connected, |view| view.child(guidance))
+                    .child("Queued ≠ sent · Sent = written to connection, not proof of delivery"),
             )
     }
 }

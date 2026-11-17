@@ -72,6 +72,7 @@ struct Desktop {
     model: Model,
     client: Option<Client>,
     snapshot: Arc<State>,
+    snapshot_lifecycle: (bool, bool),
     host: Entity<InputState>,
     port: Entity<InputState>,
     nick: Entity<InputState>,
@@ -145,6 +146,7 @@ impl Desktop {
             model: Model::default(),
             client: None,
             snapshot: Arc::default(),
+            snapshot_lifecycle: (false, false),
             host,
             port,
             nick,
@@ -278,7 +280,31 @@ impl Desktop {
         cx.notify();
     }
 
+    /// State snapshots are copy-on-write in the core. Reconcile only a new
+    /// identity or lifecycle transition, and invalidate even when just a topic
+    /// or member list changed (neither necessarily has a retained UI event).
+    fn sync_snapshot(&mut self, snapshot: Arc<State>, registered: bool, closed: bool) -> bool {
+        let lifecycle = (registered, closed);
+        // Retained FIFO events may temporarily install an older self nick or
+        // registration status. Restore authoritative identity after the drain,
+        // even if the worker has not published a newer snapshot in between.
+        if Arc::ptr_eq(&self.snapshot, &snapshot)
+            && self.snapshot_lifecycle == lifecycle
+            && self.model.nick == snapshot.nick
+            && self.model.connected == (registered && !closed)
+        {
+            return false;
+        }
+        self.snapshot = snapshot;
+        self.snapshot_lifecycle = lifecycle;
+        self.model.sync_snapshot(&self.snapshot, registered, closed);
+        true
+    }
+
     fn poll(&mut self, cx: &mut Context<Self>) {
+        if self.client.is_none() {
+            return;
+        }
         let mut changed = false;
         let mut terminal_seen = false;
         let was_connected = self.model.connected;
@@ -293,9 +319,8 @@ impl Desktop {
                 break;
             };
             if !changed && let Some(client) = &self.client {
-                self.snapshot = client.snapshot();
-                self.model.sync_snapshot(
-                    &self.snapshot,
+                self.sync_snapshot(
+                    client.snapshot(),
                     client.is_registered(),
                     client.is_closed(),
                 );
@@ -336,21 +361,11 @@ impl Desktop {
             self.snapshot = Arc::default();
             self.request_visible_focus();
         } else if let Some(client) = &self.client {
-            let previous = (
-                self.model.connected,
-                self.model.status.clone(),
-                self.model.nick.clone(),
+            changed |= self.sync_snapshot(
+                client.snapshot(),
+                client.is_registered(),
+                client.is_closed(),
             );
-            self.snapshot = client.snapshot();
-            let closed = client.is_closed();
-            self.model
-                .sync_snapshot(&self.snapshot, client.is_registered(), closed);
-            changed |= previous
-                != (
-                    self.model.connected,
-                    self.model.status.clone(),
-                    self.model.nick.clone(),
-                );
         }
         if !was_connected && self.model.connected {
             self.show_conversation();

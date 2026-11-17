@@ -108,6 +108,104 @@ fn connection_hint_fits_the_card_without_displacing_controls(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn offline_history_keeps_an_actionable_connection_path_and_preserves_draft(
+    cx: &mut TestAppContext,
+) {
+    for (width, height) in [(900., 640.), (1240., 820.)] {
+        let (view, mut window) = desktop(cx, width, height);
+        window.update(|window, cx| {
+            view.update(cx, |desktop, cx| {
+                desktop.model.push("#rust", "<friend> retained history");
+                desktop.model.select("#rust");
+                desktop.composer.update(cx, |input, cx| {
+                    input.set_value("unsent café 🦀", window, cx)
+                });
+                desktop.show_conversation();
+                cx.notify();
+            });
+        });
+        draw(&mut window);
+        for selector in ["composer-state-hint", "composer-connection-action"] {
+            contained(&mut window, selector, "composer-connection-state");
+            contained(&mut window, selector, "composer-area");
+        }
+        let hint = window.debug_bounds("composer-state-hint").unwrap();
+        let action = window.debug_bounds("composer-connection-action").unwrap();
+        assert!(hint.right() <= action.origin.x);
+        let heading = window.debug_bounds("conversation-heading").unwrap();
+        let messages = window.debug_bounds("conversation-messages").unwrap();
+        let composer = window.debug_bounds("composer-area").unwrap();
+        assert_eq!(heading.origin.x, messages.origin.x);
+        assert_eq!(composer.origin.x, messages.origin.x);
+        assert_eq!(composer.right(), messages.right());
+        assert!(messages.size.height > px(100.));
+        window.simulate_click(action.center(), gpui::Modifiers::default());
+        draw(&mut window);
+        window.update(|window, cx| {
+            let desktop = view.read(cx);
+            assert!(desktop.connection_open);
+            assert!(desktop.client.is_none());
+            assert_eq!(desktop.composer.read(cx).value(), "unsent café 🦀");
+            assert_eq!(desktop.model.selected, "#rust");
+            assert!(desktop.host.read(cx).focus_handle(cx).is_focused(window));
+        });
+        // Returning to the workspace must not discard the retained history
+        // or hide the recovery action behind the connection form.
+        window.update(|_, cx| {
+            view.update(cx, |desktop, cx| {
+                desktop.show_conversation();
+                cx.notify();
+            });
+        });
+        draw(&mut window);
+        contained(&mut window, "composer-connection-action", "composer-area");
+        window.update(|_, cx| {
+            assert_eq!(view.read(cx).list_messages.len(), 1);
+            assert_eq!(view.read(cx).composer.read(cx).value(), "unsent café 🦀");
+        });
+    }
+}
+
+#[gpui::test]
+fn registered_composer_keeps_guidance_and_native_input_in_the_message_column(
+    cx: &mut TestAppContext,
+) {
+    for (width, height) in [(900., 640.), (1240., 820.)] {
+        let (view, mut window) = desktop(cx, width, height);
+        window.update(|_, cx| {
+            view.update(cx, |desktop, cx| {
+                desktop.model.registered("tester".into());
+                desktop.model.push("#rust", "<friend> hello");
+                desktop.model.select("#rust");
+                desktop.show_conversation();
+                cx.notify();
+            });
+        });
+        draw(&mut window);
+        contained(&mut window, "composer-guidance", "composer-area");
+        contained(&mut window, "field:Composer", "composer-area");
+        let messages = window.debug_bounds("conversation-messages").unwrap();
+        let composer = window.debug_bounds("composer-area").unwrap();
+        assert!(messages.bottom() <= composer.origin.y);
+        assert!(messages.size.height > px(100.));
+        window.update(|window, cx| {
+            assert!(
+                view.read(cx)
+                    .composer
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+        });
+        window.simulate_input("a native draft");
+        draw(&mut window);
+        window.update(|_, cx| {
+            assert_eq!(view.read(cx).composer.read(cx).value(), "a native draft");
+        });
+    }
+}
+
+#[gpui::test]
 fn every_outgoing_status_keeps_its_badge_and_full_author_source(cx: &mut TestAppContext) {
     use std::{cell::RefCell, rc::Rc};
     struct Probe {

@@ -57,7 +57,7 @@ cargo run -p ruckus -- --version
 # Library + headless frontend model/CLI checks without desktop dependencies:
 cargo test --workspace --no-default-features --locked
 # Optional synthetic native-window/input tests (no IRC server or display needed):
-cargo test -p ruckus --features ui-tests --locked desktop::tests
+cargo test -p ruckus --features ui-tests --locked
 ```
 
 Before submitting changes:

@@ -73,6 +73,10 @@ The GUI polls at bounded intervals and caps work per frame. Immutable `Arc`
 snapshots keep UI reads constant-time under the worker lock; state changes use
 copy-on-write. Ordinary chat/liveness traffic does not copy state. Membership is
 bounded to 65,536 entries across at most 256 joined channels.
+The desktop reconciles snapshots only when their shared identity or lifecycle
+changes, or retained FIFO events temporarily replace the authoritative identity.
+An unchanged idle snapshot does not rebuild joined-channel projections. New
+snapshots invalidate the view even when only topics or members changed.
 
 Connection setup and registration have deadlines. Reads have no default idle
 timeout. Framing retains partial bytes across cancellation. A cancelled or
