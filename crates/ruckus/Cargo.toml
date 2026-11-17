@@ -1,0 +1,23 @@
+[package]
+name = "ruckus"
+description = "A Rust IRCv3 client based on Lurk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = ["gui"]
+gui = ["dep:gpui", "dep:gpui-component"]
+# Native synthetic-window tests are opt-in so headless builds stay GPUI-free.
+ui-tests = ["gui", "gpui/test-support"]
+
+[dependencies]
+ruckus-core = { path = "../ruckus-core" }
+gpui = { version = "=0.2.2", features = ["runtime_shaders"], optional = true }
+gpui-component = { version = "=0.5.1", optional = true }
+
+[lints]
+workspace = true
