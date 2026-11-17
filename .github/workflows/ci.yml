@@ -12,6 +12,7 @@ jobs:
     name: Headless Rust ${{ matrix.rust }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         rust: ["1.88.0", stable]
     steps:

@@ -223,6 +223,21 @@ fn publish_terminal(events: &Mutex<Events>, closed: &Mutex<bool>, reason: &str) 
     *closed = true;
 }
 
+fn allocate_send_id(counter: &AtomicU64) -> Result<SendId, Error> {
+    // Use the long-stable CAS primitive: fetch_update is deprecated on newer
+    // toolchains, while its replacement is newer than our supported Rust 1.88.
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current
+            .checked_add(1)
+            .ok_or(Error("send identifiers exhausted"))?;
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Ok(SendId(current)),
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 impl Client {
     /// Validate settings and start connecting in the background.
     ///
@@ -374,11 +389,7 @@ impl Client {
                     mpsc::error::TrySendError::Full(_) => Error("outbound queue is full"),
                     mpsc::error::TrySendError::Closed(_) => Error("connection is closed"),
                 })?;
-        let id = SendId(
-            self.next_send_id
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .map_err(|_| Error("send identifiers exhausted"))?,
-        );
+        let id = allocate_send_id(&self.next_send_id)?;
         let count = messages.len();
         for (index, (permit, message)) in permits.zip(messages).enumerate() {
             permit.send(Outbound {
@@ -717,6 +728,33 @@ async fn session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_ids_are_unique_under_contention_and_exhaustion_does_not_wrap() {
+        let counter = Arc::new(AtomicU64::new(1));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let counter = counter.clone();
+                std::thread::spawn(move || {
+                    (0..256)
+                        .map(|_| allocate_send_id(&counter).unwrap().0)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut ids: Vec<_> = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=1024).collect::<Vec<_>>());
+        counter.store(u64::MAX, Ordering::Relaxed);
+        assert_eq!(
+            allocate_send_id(&counter),
+            Err(Error("send identifiers exhausted"))
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
 
     #[test]
     fn insecure_credentials_and_injection_are_rejected_before_networking() {
