@@ -25,6 +25,9 @@ mod tests;
 #[cfg(all(test, feature = "ui-tests"))]
 mod interaction_tests;
 
+#[cfg(all(test, feature = "ui-tests"))]
+mod polish_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PendingFocus {
     Host,
@@ -88,6 +91,7 @@ struct Desktop {
     list_target: String,
     list_revision: u64,
     list_edits: u64,
+    list_epoch: u64,
     list_messages: Arc<Vec<String>>,
     follow_messages: bool,
     _subscriptions: Vec<Subscription>,
@@ -160,6 +164,7 @@ impl Desktop {
             list_target: String::new(),
             list_revision: 0,
             list_edits: 0,
+            list_epoch: 0,
             list_messages: Arc::default(),
             follow_messages: true,
             _subscriptions: subscriptions,
@@ -454,9 +459,15 @@ impl Desktop {
         let edits = buffer.map(|buffer| buffer.edits).unwrap_or(0);
         let count = buffer.map(|buffer| buffer.messages.len()).unwrap_or(0);
         let changed_target = self.list_target != self.model.selected;
+        let epoch = self.model.history_epoch();
+        let rebuilt = epoch != self.list_epoch;
         if changed_target || revision < self.list_revision {
             self.message_list.reset(count);
             self.follow_messages = true;
+        } else if rebuilt {
+            let anchor = self.message_list.logical_scroll_top();
+            self.message_list.reset(count);
+            self.message_list.scroll_to(anchor);
         } else if revision != self.list_revision {
             let old_count = self.message_list.item_count();
             let added = usize::try_from(revision - self.list_revision)
@@ -476,22 +487,23 @@ impl Desktop {
             let end = self.message_list.item_count();
             self.message_list.splice(end..end, added);
         }
-        if !changed_target && edits != self.list_edits {
+        if !changed_target && !rebuilt && edits != self.list_edits {
             let anchor = self.message_list.logical_scroll_top();
             self.message_list.reset(count);
             self.message_list.scroll_to(anchor);
         }
-        if changed_target || revision != self.list_revision || edits != self.list_edits {
+        if changed_target || rebuilt || revision != self.list_revision || edits != self.list_edits {
             self.list_messages = Arc::new(
                 buffer
                     .into_iter()
                     .flat_map(|buffer| buffer.messages.iter())
-                    .cloned()
+                    .map(|entry| entry.text.clone())
                     .collect(),
             );
             self.list_target.clone_from(&self.model.selected);
             self.list_revision = revision;
             self.list_edits = edits;
+            self.list_epoch = epoch;
         }
         if self.follow_messages {
             self.message_list.scroll_to(ListOffset {

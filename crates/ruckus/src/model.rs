@@ -9,9 +9,30 @@ const PENDING_SEND_LIMIT: usize = 512;
 // NUL is forbidden on the wire, so this key cannot collide with a legal nick.
 pub(crate) const STATUS: &str = "\0Network";
 
+/// Rendered history and its optional connection-local send identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryEntry {
+    pub text: String,
+    send_id: Option<SendId>,
+}
+
+impl AsRef<str> for HistoryEntry {
+    fn as_ref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl std::ops::Deref for HistoryEntry {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Buffer {
-    pub messages: VecDeque<String>,
+    pub messages: VecDeque<HistoryEntry>,
     pub revision: u64,
     /// In-place status edits are not history appends.
     pub edits: u64,
@@ -19,7 +40,6 @@ pub(crate) struct Buffer {
 
 struct PendingSend {
     target: String,
-    line: String,
     sent_line: String,
     unconfirmed_line: String,
 }
@@ -34,6 +54,7 @@ pub(crate) struct Model {
     chan_types: String,
     status_msg: String,
     pending_sends: BTreeMap<SendId, PendingSend>,
+    history_epoch: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -57,11 +78,17 @@ impl Default for Model {
             chan_types: "#&".into(),
             status_msg: String::new(),
             pending_sends: BTreeMap::new(),
+            history_epoch: 0,
         }
     }
 }
 
 impl Model {
+    /// Invalidates history projections after structural buffer reconstruction.
+    pub fn history_epoch(&self) -> u64 {
+        self.history_epoch
+    }
+
     pub fn selected_revision(&self) -> u64 {
         self.buffers
             .get(&self.selected)
@@ -106,7 +133,13 @@ impl Model {
                         .min_by_key(|key| key.as_str() == self.selected)
                         .cloned();
                     if let Some(evict) = evict {
-                        self.buffers.remove(&evict);
+                        if let Some(buffer) = self.buffers.remove(&evict) {
+                            for entry in buffer.messages {
+                                if let Some(id) = entry.send_id {
+                                    self.pending_sends.remove(&id);
+                                }
+                            }
+                        }
                         if self.selected == evict {
                             self.selected = STATUS.into();
                         }
@@ -169,6 +202,7 @@ impl Model {
             return;
         }
         self.case_mapping = mapping;
+        self.history_epoch = self.history_epoch.wrapping_add(1);
         let selected = self.selected.clone();
         let buffers = std::mem::take(&mut self.buffers);
         for (target, buffer) in buffers {
@@ -178,7 +212,7 @@ impl Model {
                 self.buffers.entry(target.clone()).or_default();
             }
             for message in buffer.messages {
-                self.push(&target, message);
+                self.append_history(&target, message);
             }
         }
         self.buffers.entry(STATUS.into()).or_default();
@@ -189,6 +223,16 @@ impl Model {
     }
 
     pub fn push(&mut self, target: &str, text: impl AsRef<str>) {
+        self.append_history(
+            target,
+            HistoryEntry {
+                text: clean(text.as_ref()),
+                send_id: None,
+            },
+        );
+    }
+
+    fn append_history(&mut self, target: &str, entry: HistoryEntry) {
         let existing = self.existing_target(target);
         let target = if let Some(existing) = existing {
             existing
@@ -198,10 +242,13 @@ impl Model {
             STATUS.to_owned()
         };
         let buffer = self.buffers.entry(target).or_default();
-        if buffer.messages.len() >= HISTORY_LIMIT {
-            buffer.messages.pop_front();
+        if buffer.messages.len() >= HISTORY_LIMIT
+            && let Some(evicted) = buffer.messages.pop_front()
+            && let Some(id) = evicted.send_id
+        {
+            self.pending_sends.remove(&id);
         }
-        buffer.messages.push_back(clean(text.as_ref()));
+        buffer.messages.push_back(entry);
         buffer.revision = buffer.revision.wrapping_add(1);
     }
 
@@ -221,7 +268,13 @@ impl Model {
             self.push(target, unconfirmed_line);
             return;
         }
-        self.push(target, &line);
+        self.append_history(
+            target,
+            HistoryEntry {
+                text: line,
+                send_id: Some(id),
+            },
+        );
         // push may redirect to the status buffer at the conversation cap.
         let target = self
             .existing_target(target)
@@ -230,7 +283,6 @@ impl Model {
             id,
             PendingSend {
                 target,
-                line,
                 sent_line,
                 unconfirmed_line,
             },
@@ -250,13 +302,14 @@ impl Model {
         if let Some(line) = buffer
             .messages
             .iter_mut()
-            .find(|line| **line == pending.line)
+            .find(|entry| entry.send_id == Some(id))
         {
-            *line = if written {
+            line.text = if written {
                 pending.sent_line
             } else {
                 pending.unconfirmed_line
             };
+            line.send_id = None;
             buffer.edits = buffer.edits.wrapping_add(1);
         }
     }
@@ -460,6 +513,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn late_confirmation_cannot_confirm_an_identical_newer_row() {
+        let mut model = Model::default();
+        model.registered("me".into());
+        model.queued(SendId(1), "#test", "same");
+        for _ in 0..HISTORY_LIMIT {
+            model.push("#test", "intervening history");
+        }
+        assert!(!model.pending_sends.contains_key(&SendId(1)));
+        model.queued(SendId(2), "#test", "same");
+        model.sent(SendId(1));
+        assert_eq!(
+            model.buffers["#test"].messages.back().unwrap().text,
+            "me (queued): same"
+        );
+        model.disconnected("closed before the newer send flushed");
+        assert_eq!(
+            model.buffers["#test"].messages.back().unwrap().text,
+            "me (unconfirmed): same"
+        );
+    }
+
+    #[test]
+    fn send_identity_survives_case_mapping_merges() {
+        let mut model = Model::default();
+        model.registered("me".into());
+        model.set_case_mapping(CaseMapping::Ascii);
+        model.queued(SendId(1), "Nick[", "same");
+        model.queued(SendId(2), "Nick{", "same");
+        let epoch = model.history_epoch();
+        model.set_case_mapping(CaseMapping::Rfc1459);
+        assert_ne!(epoch, model.history_epoch());
+        model.sent(SendId(2));
+        let rows = &model.buffers["Nick["].messages;
+        assert_eq!(rows[0].text, "me (queued): same");
+        assert_eq!(rows[1].text, "me (sent): same");
+        model.unconfirm_pending();
+        assert_eq!(
+            model.buffers["Nick["].messages[0].text,
+            "me (unconfirmed): same"
+        );
+    }
+
+    #[test]
     fn tracked_sends_advance_in_place_without_adding_history_or_losing_the_author() {
         let mut model = Model::default();
         model.registered("exec".into());
@@ -467,12 +563,21 @@ mod tests {
         model.queued(SendId(2), "#ruckus", "second");
         let revision = model.buffers["#ruckus"].revision;
         model.sent(SendId(2));
-        assert_eq!(model.buffers["#ruckus"].messages[0], "exec (queued): first");
-        assert_eq!(model.buffers["#ruckus"].messages[1], "exec (sent): second");
+        assert_eq!(
+            model.buffers["#ruckus"].messages[0].text,
+            "exec (queued): first"
+        );
+        assert_eq!(
+            model.buffers["#ruckus"].messages[1].text,
+            "exec (sent): second"
+        );
         model.sent(SendId(1));
         model.sent(SendId(1)); // duplicate notification is harmless
         assert_eq!(model.buffers["#ruckus"].messages.len(), 2);
-        assert_eq!(model.buffers["#ruckus"].messages[0], "exec (sent): first");
+        assert_eq!(
+            model.buffers["#ruckus"].messages[0].text,
+            "exec (sent): first"
+        );
         assert_eq!(model.buffers["#ruckus"].revision, revision);
         assert_eq!(model.buffers["#ruckus"].edits, 2);
     }
@@ -484,15 +589,28 @@ mod tests {
         model.queued(SendId(1), "#ruckus", "connection ended");
         model.disconnected("closed");
         assert_eq!(
-            model.buffers["#ruckus"].messages[0],
+            model.buffers["#ruckus"].messages[0].text,
             "exec (unconfirmed): connection ended"
         );
         assert!(model.pending_sends.is_empty());
         for id in 2..PENDING_SEND_LIMIT as u64 + 3 {
             model.queued(SendId(id), "#ruckus", "pending");
         }
+        // Evicted rows release their tracking slots rather than retaining
+        // invisible sends until a connection closes.
+        assert_eq!(model.pending_sends.len(), HISTORY_LIMIT);
+        assert!(model.can_track_send());
+        for id in 10_000..10_000 + (PENDING_SEND_LIMIT - HISTORY_LIMIT) as u64 {
+            model.queued(SendId(id), "another", "pending in another buffer");
+        }
         assert_eq!(model.pending_sends.len(), PENDING_SEND_LIMIT);
         assert!(!model.can_track_send());
+        model.queued(SendId(20_000), "another", "over capacity");
+        assert_eq!(model.pending_sends.len(), PENDING_SEND_LIMIT);
+        assert_eq!(
+            model.buffers["another"].messages.back().unwrap().text,
+            "exec (unconfirmed): over capacity"
+        );
         model.unconfirm_pending();
         assert!(model.can_track_send());
     }
@@ -502,7 +620,7 @@ mod tests {
         let mut model = Model::default();
         let message = ruckus_core::irc::Message::new("NOTICE", vec!["*".into(), "hello".into()]);
         model.receive_message(&message, &[], "me");
-        assert_eq!(model.buffers[STATUS].messages[0], "NOTICE * hello");
+        assert_eq!(model.buffers[STATUS].messages[0].text, "NOTICE * hello");
         assert!(!model.buffers.contains_key("server"));
     }
 
@@ -552,7 +670,7 @@ mod tests {
             &["@%+rust".into(), "hi ops".into()],
         );
         assert_eq!(
-            model.buffers["+Rust"].messages.back().unwrap(),
+            model.buffers["+Rust"].messages.back().unwrap().text,
             "<friend> hi ops"
         );
         assert!(!model.buffers.contains_key("friend@host"));
@@ -652,6 +770,33 @@ mod tests {
     }
 
     #[test]
+    fn conversation_eviction_releases_send_identity_and_ignores_late_confirmation() {
+        let mut model = Model::default();
+        model.registered("me".into());
+        model.queued(SendId(1), "peer0", "same");
+        for index in 1..BUFFER_LIMIT - 1 {
+            model.push(&format!("peer{index}"), "retained history");
+        }
+        assert_eq!(model.buffers.len(), BUFFER_LIMIT);
+        let mut state = ruckus_core::state::State::new("me");
+        state.apply(&ruckus_core::irc::Message::parse(":me!u@h JOIN #joined").unwrap());
+        model.sync_snapshot(&state, true, false);
+        assert!(!model.buffers.contains_key("peer0"));
+        assert!(!model.pending_sends.contains_key(&SendId(1)));
+        model.queued(SendId(2), "#joined", "same");
+        model.sent(SendId(1));
+        assert_eq!(
+            model.buffers["#joined"].messages[0].text,
+            "me (queued): same"
+        );
+        model.unconfirm_pending();
+        assert_eq!(
+            model.buffers["#joined"].messages[0].text,
+            "me (unconfirmed): same"
+        );
+    }
+
+    #[test]
     fn joined_channels_take_priority_over_retained_private_histories() {
         let mut model = Model::default();
         for index in 0..BUFFER_LIMIT - 1 {
@@ -675,7 +820,7 @@ mod tests {
             model.buffers["#joined0"]
                 .messages
                 .iter()
-                .any(|line| line == "keep joined history")
+                .any(|line| line.text == "keep joined history")
         );
         assert_eq!(model.buffers.len(), ruckus_core::state::MAX_CHANNELS + 1);
     }
@@ -779,7 +924,7 @@ mod tests {
         assert_eq!(model.nick, "newme");
         model.received("other!u@h", "PRIVMSG", &["me".into(), "hello".into()]);
         assert_eq!(
-            model.buffers["other"].messages.back().unwrap(),
+            model.buffers["other"].messages.back().unwrap().text,
             "<other> hello"
         );
         model.disconnected("end");
@@ -793,7 +938,7 @@ mod tests {
             model.push("#rust", "\x1bhello\x00");
         }
         assert_eq!(model.buffers["#rust"].messages.len(), HISTORY_LIMIT);
-        assert_eq!(model.buffers["#rust"].messages[0], "hello");
+        assert_eq!(model.buffers["#rust"].messages[0].text, "hello");
         for i in 0..100 {
             model.push(&format!("nick{i}"), "message");
         }
@@ -809,7 +954,7 @@ mod tests {
             "PRIVMSG",
             &["friend".into(), "hello".into()],
         );
-        assert_eq!(model.buffers["friend"].messages[0], "<me> hello");
+        assert_eq!(model.buffers["friend"].messages[0].text, "<me> hello");
         assert!(!model.buffers.contains_key("me"));
     }
 
@@ -818,7 +963,7 @@ mod tests {
         assert_eq!(clean("fr\u{202e}iend\x1b"), "friend");
         let mut model = Model::default();
         model.push("friend", "hello\u{2066}world\x07");
-        assert_eq!(model.buffers["friend"].messages[0], "helloworld");
+        assert_eq!(model.buffers["friend"].messages[0].text, "helloworld");
     }
 
     #[test]

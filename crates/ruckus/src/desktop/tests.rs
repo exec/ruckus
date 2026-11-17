@@ -44,6 +44,34 @@ fn draw(cx: &mut VisualTestContext) {
     });
 }
 
+#[gpui::test]
+fn case_mapping_merge_invalidates_history_even_when_counters_alias(cx: &mut TestAppContext) {
+    let (view, mut window) = desktop(cx, 900., 640.);
+    window.update(|_, cx| {
+        view.update(cx, |desktop, _| {
+            desktop
+                .model
+                .set_case_mapping(ruckus_core::isupport::CaseMapping::Ascii);
+            for index in 0..501 {
+                desktop.model.push("Nick[", format!("old {index}"));
+            }
+            desktop.model.push("Nick{", "merged row");
+            desktop.model.select("Nick[");
+            desktop.sync_message_list();
+            let cache = desktop.list_messages.clone();
+            let counters = (desktop.list_revision, desktop.list_edits);
+            desktop
+                .model
+                .set_case_mapping(ruckus_core::isupport::CaseMapping::Rfc1459);
+            desktop.sync_message_list();
+            assert_eq!(counters, (desktop.list_revision, desktop.list_edits));
+            assert!(!Arc::ptr_eq(&cache, &desktop.list_messages));
+            assert_eq!(desktop.list_messages.last().unwrap(), "merged row");
+            assert_eq!(desktop.list_messages.first().unwrap(), "old 2");
+        });
+    });
+}
+
 fn assert_input_start_visible(
     window: &mut VisualTestContext,
     input: &Entity<InputState>,

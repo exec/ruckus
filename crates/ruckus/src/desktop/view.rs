@@ -2,7 +2,10 @@
 
 use super::*;
 use crate::{
-    presentation::{MessageRow, RowKind, author_color, author_initial, message_row, same_author},
+    presentation::{
+        MessageRow, RowKind, author_color, author_initial, empty_conversation_copy, message_row,
+        same_author,
+    },
     theme as t,
 };
 use gpui::{Div, FontWeight, list, rgba};
@@ -126,7 +129,10 @@ pub(super) fn chat_row_with_layout(row: MessageRow, grouped: bool) -> (Div, gpui
                                             .flex_shrink_0()
                                             .text_size(px(10.))
                                             .font_weight(FontWeight::NORMAL)
-                                            .text_color(rgb(t::MUTED))
+                                            .text_color(rgb(match row.kind {
+                                                RowKind::Queued | RowKind::Unconfirmed => t::AMBER,
+                                                _ => t::MUTED,
+                                            }))
                                             .child(match row.kind {
                                                 RowKind::Sent => "SENT",
                                                 RowKind::Unconfirmed => "UNCONFIRMED",
@@ -198,13 +204,18 @@ impl Desktop {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .px_5()
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
+                            .mr_4()
                             .text_size(px(12.))
+                            .text_ellipsis()
                             .text_color(rgb(t::MUTED))
                             .child("A little less noise. A little more conversation."),
                     )
@@ -268,7 +279,14 @@ impl Desktop {
                     .text_color(rgb(if selected { t::ACCENT } else { t::MUTED }))
                     .child(symbol),
             )
-            .child(div().text_size(px(13.)).text_ellipsis().child(title))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(13.))
+                    .text_ellipsis()
+                    .child(title),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.model.select(&target);
                 this.show_conversation();
@@ -330,7 +348,13 @@ impl Desktop {
                             .text_size(px(11.))
                             .text_color(rgb(self.connection_color()))
                             .child(t::dot(self.connection_color()))
-                            .child(self.model.status.clone()),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .whitespace_normal()
+                                    .child(clean(&self.model.status)),
+                            ),
                     ),
             )
             .child(
@@ -367,7 +391,11 @@ impl Desktop {
                                 .py_2()
                                 .text_size(px(12.))
                                 .text_color(rgb(t::MUTED))
-                                .child("A place for every conversation."),
+                                .child(if self.model.connected {
+                                    "No channels joined yet."
+                                } else {
+                                    "Connect before joining a channel."
+                                }),
                         )
                     })
                     .child(
@@ -458,8 +486,8 @@ impl Desktop {
                         div().p_6().rounded_xl().border_1().border_color(rgb(t::BORDER))
                             .bg(rgb(t::PANEL)).flex().flex_col().gap_5()
                             .child(div().flex().items_center().justify_between()
-                                .child(div().font_weight(FontWeight::SEMIBOLD).child("Connect to a network"))
-                                .child(t::badge(if self.tls { "TLS enabled" } else { "Plaintext" }, if self.tls { t::GREEN } else { t::AMBER })))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child(if busy { "Connection settings" } else { "Connect to a network" }))
+                                .child(t::badge(if self.tls { "TLS configured" } else { "Not encrypted" }, if self.tls { t::ACCENT } else { t::AMBER })))
                             .child(field("Server address", Input::new(&self.host).disabled(busy)))
                             .child(div().flex().gap_4()
                                 .child(field("Nickname", Input::new(&self.nick).disabled(busy)).flex_1())
@@ -488,9 +516,9 @@ impl Desktop {
                                     .child(div().text_size(px(11.)).text_color(rgb(t::MUTED))
                                         .child("SASL PLAIN requires verified TLS. Your password is never logged."))))
                             .when(!self.connection_feedback.is_empty(), |view| view.child(self.feedback_view(&self.connection_feedback, "connection-feedback")))
-                            .child(div().flex().items_center().justify_between().gap_3()
-                                .child(div().text_size(px(11.)).text_color(rgb(t::MUTED))
-                                    .child(if busy { "Connection settings are locked during a session." } else { "No connection is made until you choose Connect." }))
+                            .child(div().debug_selector(|| "connection-actions".into()).flex().items_center().justify_between().gap_3()
+                                .child(div().debug_selector(|| "connection-hint".into()).flex_1().min_w_0().whitespace_normal().text_size(px(11.)).text_color(rgb(t::MUTED))
+                                    .child(if busy { "Settings are locked during this session." } else { "Enter or Connect to connect. Nothing connects automatically." }))
                                 .child(if busy {
                                     Button::new("cancel-connect").label(if self.model.connected { "Disconnect" } else { "Cancel" })
                                         .on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); }))
@@ -513,6 +541,9 @@ impl Desktop {
         };
         div()
             .debug_selector(move || selector.into())
+            .w_full()
+            .min_w_0()
+            .whitespace_normal()
             .px_3()
             .py_2()
             .rounded_md()
@@ -528,6 +559,8 @@ impl Desktop {
         let channel = self.snapshot.channel(&self.model.selected);
         let lines = self.list_messages.clone();
         let messages_empty = lines.is_empty();
+        let (empty_title, empty_detail) =
+            empty_conversation_copy(is_network, self.model.connected, self.client.is_some());
         let topic = channel
             .map(|channel| clean(&channel.topic.text))
             .unwrap_or_default();
@@ -536,40 +569,172 @@ impl Desktop {
         } else {
             clean(&self.model.selected)
         };
-        div().flex().flex_col().flex_1().min_w_0()
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
             .child(
-                div().px_6().py_4().border_b_1().border_color(rgb(t::BORDER))
-                    .flex().items_center().justify_between().gap_4()
-                    .child(div().flex().flex_col().gap_1().min_w_0()
-                        .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).text_ellipsis().child(selected))
-                        .child(div().text_size(px(12.)).text_color(rgb(t::MUTED)).text_ellipsis()
-                            .child(if !topic.is_empty() { topic } else if is_network { "The pulse of your connection.".into() } else { "A little room for a good conversation.".into() })))
-                    .when(channel.is_some(), |view| view.child(
-                        Button::new("toggle-members").label(format!("{} members", channel.map(|c| c.members.len()).unwrap_or(0)))
-                            .on_click(cx.listener(|this, _, _, cx| { this.show_members = !this.show_members; cx.notify(); })))),
+                div()
+                    .px_6()
+                    .py_4()
+                    .border_b_1()
+                    .border_color(rgb(t::BORDER))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .flex_col()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_ellipsis()
+                                    .child(selected),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(rgb(t::MUTED))
+                                    .text_ellipsis()
+                                    .child(if !topic.is_empty() {
+                                        topic
+                                    } else if is_network {
+                                        "The pulse of your connection.".into()
+                                    } else {
+                                        "A little room for a good conversation.".into()
+                                    }),
+                            ),
+                    )
+                    .when(channel.is_some(), |view| {
+                        view.child(
+                            Button::new("toggle-members")
+                                .label(format!(
+                                    "{} members",
+                                    channel.map(|c| c.members.len()).unwrap_or(0)
+                                ))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_members = !this.show_members;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
             .child(
-                div().flex().flex_1().min_h_0()
-                    .child(div().id("messages").debug_selector(|| "conversation-messages".into()).flex().flex_col().flex_1().min_w_0().min_h_0()
-                        .when(messages_empty, |view| view.child(
-                            div().px_6().py_8().flex().flex_col().gap_3()
-                                .child(div().size(px(44.)).flex().items_center().justify_center().rounded_xl()
-                                    .bg(rgb(t::ACCENT_SURFACE)).text_color(rgb(t::ACCENT)).text_size(px(24.))
-                                    .child(if is_network { "≋" } else { "#" }))
-                                .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD)
-                                    .child(if is_network { "You're in good company." } else { "The conversation starts with you." }))
-                                .child(div().text_size(px(13.)).text_color(rgb(t::MUTED))
-                                    .child(if is_network { "Registration and network notices will appear here. Use /join #channel to find a conversation." } else { "Say hello. Messages in this conversation will appear here." }))))
-                        .when(!messages_empty, |view| view.child(
-                            list(self.message_list.clone(), move |index, _, _| {
-                                let row = message_row(&lines[index]);
-                                let grouped = index.checked_sub(1).is_some_and(|previous| {
-                                    same_author(&message_row(&lines[previous]), &row)
-                                });
-                                chat_row(row, grouped).into_any_element()
-                            }).flex_1().min_h_0().px_6().py_4()
-                        )))
-                    .when(self.show_members && channel.is_some(), |view| view.child(self.members(cx))),
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .id("messages")
+                            .debug_selector(|| "conversation-messages".into())
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .when(messages_empty, |view| {
+                                view.child(
+                                    div()
+                                        .debug_selector(|| "empty-conversation".into())
+                                        .px_6()
+                                        .py_8()
+                                        .flex()
+                                        .flex_col()
+                                        .items_start()
+                                        .min_w_0()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .size(px(44.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded_xl()
+                                                .bg(rgb(t::ACCENT_SURFACE))
+                                                .text_color(rgb(t::ACCENT))
+                                                .text_size(px(24.))
+                                                .child(if is_network { "≋" } else { "#" }),
+                                        )
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "empty-title".into())
+                                                .text_size(px(22.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(empty_title),
+                                        )
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "empty-detail".into())
+                                                .text_size(px(13.))
+                                                .text_color(rgb(t::MUTED))
+                                                .child(empty_detail),
+                                        )
+                                        .when(
+                                            self.client.is_none() && !self.model.connected,
+                                            |view| {
+                                                view.child(
+                                                    div()
+                                                        .debug_selector(|| "empty-action".into())
+                                                        .flex()
+                                                        .child(
+                                                            Button::new("empty-open-connection")
+                                                                .label("Open Connection")
+                                                                .on_click(cx.listener(
+                                                                    |this, _, _, cx| {
+                                                                        this.show_connection();
+                                                                        cx.notify();
+                                                                    },
+                                                                )),
+                                                        ),
+                                                )
+                                            },
+                                        )
+                                        .when(is_network && self.model.connected, |view| {
+                                            view.child(
+                                                div()
+                                                    .debug_selector(|| "empty-action".into())
+                                                    .flex()
+                                                    .child(
+                                                        Button::new("empty-join-channel")
+                                                            .label("Join a channel")
+                                                            .on_click(cx.listener(
+                                                                |this, _, window, cx| {
+                                                                    this.prepare_join(window, cx)
+                                                                },
+                                                            )),
+                                                    ),
+                                            )
+                                        }),
+                                )
+                            })
+                            .when(!messages_empty, |view| {
+                                view.child(
+                                    list(self.message_list.clone(), move |index, _, _| {
+                                        let row = message_row(&lines[index]);
+                                        let grouped =
+                                            index.checked_sub(1).is_some_and(|previous| {
+                                                same_author(&message_row(&lines[previous]), &row)
+                                            });
+                                        chat_row(row, grouped).into_any_element()
+                                    })
+                                    .flex_1()
+                                    .min_h_0()
+                                    .px_6()
+                                    .py_4(),
+                                )
+                            }),
+                    )
+                    .when(self.show_members && channel.is_some(), |view| {
+                        view.child(self.members(cx))
+                    }),
             )
             .child(self.composer_view(cx))
     }
@@ -699,6 +864,8 @@ impl Desktop {
                     .text_color(rgb(t::MUTED))
                     .child(if self.model.connected {
                         "Enter to send · /join · /msg · /nick · /quit"
+                    } else if self.client.is_some() {
+                        "Waiting for registration. Open Connection to cancel."
                     } else {
                         "You're offline. Open Connection to get back to the conversation."
                     })

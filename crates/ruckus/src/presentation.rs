@@ -25,6 +25,37 @@ pub(crate) struct MessageRow {
     pub body: String,
 }
 
+/// Empty history is not evidence of peers, membership, or a live connection.
+pub(crate) fn empty_conversation_copy(
+    is_network: bool,
+    connected: bool,
+    connecting: bool,
+) -> (&'static str, &'static str) {
+    if !connected {
+        if connecting {
+            (
+                "Connecting to your network…",
+                "Waiting for IRC registration. You can cancel this attempt in Connection.",
+            )
+        } else {
+            (
+                "You're offline.",
+                "Open Connection to connect to an IRC network. Nothing is sent while you're offline.",
+            )
+        }
+    } else if is_network {
+        (
+            "Your connection, at a glance.",
+            "Registration and network notices appear here. Join a channel to start a conversation.",
+        )
+    } else {
+        (
+            "No messages here yet.",
+            "Messages in this conversation will appear here.",
+        )
+    }
+}
+
 /// Split only the model's `<nick> body` and outgoing status envelopes.
 ///
 /// Empty bodies are valid. Whitespace and delimiters inside the body remain
@@ -118,6 +149,26 @@ pub(crate) fn author_color(author: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_history_copy_does_not_imply_peers_or_a_connection() {
+        for network in [false, true] {
+            let (title, detail) = empty_conversation_copy(network, false, false);
+            assert_eq!(title, "You're offline.");
+            assert!(detail.contains("Nothing is sent"));
+            let (title, detail) = empty_conversation_copy(network, false, true);
+            assert_eq!(title, "Connecting to your network…");
+            assert!(detail.contains("Waiting for IRC registration"));
+        }
+        assert_eq!(
+            empty_conversation_copy(true, true, false).0,
+            "Your connection, at a glance."
+        );
+        assert_eq!(
+            empty_conversation_copy(false, true, false).0,
+            "No messages here yet."
+        );
+    }
 
     #[test]
     fn outgoing_statuses_preserve_exec_and_do_not_parse_status_words_inside_the_body() {
