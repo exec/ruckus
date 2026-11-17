@@ -165,37 +165,42 @@ impl Desktop {
         }
     }
 
-    fn header(&self, cx: &mut Context<Self>) -> Div {
-        div()
-            .h(px(64.))
+    fn header(&self, cx: &mut Context<Self>) -> TitleBar {
+        let content = div()
+            .debug_selector(|| "inline-window-header".into())
+            .w_full()
+            .h_full()
             .flex_shrink_0()
             .flex()
             .items_center()
-            .border_b_1()
-            .border_color(rgb(t::BORDER))
             .child(
                 div()
+                    .debug_selector(|| "header-brand".into())
                     .w(px(t::SIDEBAR_WIDTH))
                     .flex_shrink_0()
                     .px_5()
+                    .when(cfg!(target_os = "macos"), |view| view.pl(px(80.)))
                     .flex()
                     .items_center()
                     .gap_3()
+                    .when(!cfg!(target_os = "macos"), |view| {
+                        view.child(
+                            div()
+                                .size(px(32.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_lg()
+                                .bg(rgb(t::ACCENT))
+                                .text_color(rgb(t::SIDEBAR))
+                                .font_weight(FontWeight::BOLD)
+                                .text_size(px(20.))
+                                .child("r"),
+                        )
+                    })
                     .child(
                         div()
-                            .size(px(32.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_lg()
-                            .bg(rgb(t::ACCENT))
-                            .text_color(rgb(t::SIDEBAR))
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(px(20.))
-                            .child("r"),
-                    )
-                    .child(
-                        div()
+                            .debug_selector(|| "header-brand-label".into())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_size(px(20.))
                             .child("ruckus"),
@@ -228,18 +233,30 @@ impl Desktop {
                             }),
                     )
                     .child(
-                        Button::new("connection-settings")
-                            .label(if self.connection_open {
-                                "Back to workspace"
-                            } else {
-                                "Connection"
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_connection();
-                                cx.notify();
-                            })),
+                        div()
+                            .debug_selector(|| "header-connection-action".into())
+                            .child(
+                                Button::new("connection-settings")
+                                    .label(if self.connection_open {
+                                        "Back to workspace"
+                                    } else {
+                                        "Connection"
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_connection();
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
-            )
+            );
+        // The component supplies platform drag/hit-testing and right-side
+        // Windows/Linux controls. macOS retains real native traffic lights.
+        TitleBar::new()
+            .h(px(64.))
+            .pl_0()
+            .bg(rgb(t::CANVAS))
+            .border_color(rgb(t::BORDER))
+            .child(content)
     }
 
     fn buffer_row(

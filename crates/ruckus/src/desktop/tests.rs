@@ -16,13 +16,10 @@ fn desktop(
         let mut view = None;
         let window = cx
             .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                        gpui::point(px(0.), px(0.)),
-                        size(px(width), px(height)),
-                    ))),
-                    ..Default::default()
-                },
+                window_options(Bounds::new(
+                    gpui::point(px(0.), px(0.)),
+                    size(px(width), px(height)),
+                )),
                 |window, cx| {
                     let desktop = cx.new(|cx| Desktop::new(window, cx));
                     view = Some(desktop.clone());
@@ -42,6 +39,51 @@ fn draw(cx: &mut VisualTestContext) {
         window.refresh();
         window.draw(cx).clear();
     });
+}
+
+#[test]
+fn window_chrome_is_inline_and_keeps_the_native_title() {
+    let options = window_options(Bounds::new(
+        gpui::point(px(0.), px(0.)),
+        size(px(900.), px(640.)),
+    ));
+    let titlebar = options.titlebar.unwrap();
+    assert!(titlebar.appears_transparent);
+    assert_eq!(titlebar.title.unwrap().as_ref(), "Ruckus");
+    assert_eq!(
+        titlebar.traffic_light_position,
+        Some(gpui::point(px(16.), px(25.)))
+    );
+    assert!(matches!(
+        options.window_decorations,
+        Some(WindowDecorations::Client)
+    ));
+}
+
+#[gpui::test]
+fn inline_header_keeps_brand_and_connection_action_inside_the_window(cx: &mut TestAppContext) {
+    for (width, height) in [(900., 640.), (1240., 820.)] {
+        let (view, mut window) = desktop(cx, width, height);
+        draw(&mut window);
+        let header = window.debug_bounds("inline-window-header").unwrap();
+        let brand = window.debug_bounds("header-brand").unwrap();
+        let label = window.debug_bounds("header-brand-label").unwrap();
+        // The 64 px title bar includes its one-pixel bottom border.
+        assert_eq!(header.size.height, px(63.));
+        assert_eq!(brand.size.width, px(crate::theme::SIDEBAR_WIDTH));
+        assert!(label.left() >= brand.left());
+        assert!(label.right() <= brand.right());
+        assert!(header.right() <= px(width));
+        if cfg!(target_os = "macos") {
+            assert!(label.left() >= brand.left() + px(80.));
+        }
+        // The embedded connection button remains interactive, not a drag area.
+        let action = window.debug_bounds("header-connection-action").unwrap();
+        assert!(action.right() <= header.right());
+        window.simulate_click(action.center(), gpui::Modifiers::default());
+        draw(&mut window);
+        window.update(|_, cx| assert!(!view.read(cx).connection_open));
+    }
 }
 
 #[gpui::test]

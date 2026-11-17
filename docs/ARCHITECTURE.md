@@ -40,6 +40,11 @@ not a line-mode IRC client.
 `desktop.rs` owns connection/input events and view state; `desktop/view.rs`
 composes welcome, conversation, sidebar, composer, and member views. `theme.rs`
 is the shared dark palette for both shell surfaces and gpui-component controls.
+The application header is also the client-side title bar: macOS keeps native
+traffic lights on the left, while gpui-component supplies Windows/Linux controls
+on the right and platform window dragging. `Root` supplies Linux resize borders.
+Window-control SVGs are embedded by the desktop asset source rather than loaded
+from the working directory. Windows/Linux native interaction remains unverified.
 `presentation.rs` losslessly projects sanitized history lines into author,
 outgoing-status, and system rows. Nickname initials/colors are decorative, not verified
 identity or presence. No timestamps or network activity are fabricated.

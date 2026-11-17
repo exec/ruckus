@@ -4,11 +4,11 @@ use std::{sync::Arc, time::Duration};
 
 use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, ListAlignment, ListOffset, ListState,
-    SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rgb, size, uniform_list,
+    SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowDecorations,
+    WindowOptions, div, prelude::*, px, rgb, size, uniform_list,
 };
 use gpui_component::{
-    Disableable, Root,
+    Disableable, Root, TitleBar,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
 };
@@ -18,6 +18,7 @@ use ruckus_core::state::State;
 use crate::model::{Command, Model, STATUS, clean};
 
 mod view;
+mod window_assets;
 
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
@@ -35,37 +36,44 @@ enum PendingFocus {
     Workspace,
 }
 
+/// Keep native controls in the same 64 px row as the application header.
+fn window_options(bounds: Bounds<gpui::Pixels>) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: Some(size(px(900.), px(640.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Ruckus".into()),
+            appears_transparent: true,
+            traffic_light_position: Some(gpui::point(px(16.), px(25.))),
+        }),
+        // Linux needs explicit client decorations; Root supplies resize edges.
+        window_decorations: Some(WindowDecorations::Client),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn run() {
-    Application::new().run(|cx: &mut App| {
-        gpui_component::init(cx);
-        crate::theme::install(cx);
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let bounds = Bounds::centered(None, size(px(1240.), px(820.)), cx);
-        if let Err(error) = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(900.), px(640.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Ruckus".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
+    Application::new()
+        .with_assets(window_assets::WindowAssets)
+        .run(|cx: &mut App| {
+            gpui_component::init(cx);
+            crate::theme::install(cx);
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let bounds = Bounds::centered(None, size(px(1240.), px(820.)), cx);
+            if let Err(error) = cx.open_window(window_options(bounds), |window, cx| {
                 let view = cx.new(|cx| Desktop::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
-            },
-        ) {
-            eprintln!("Could not open the Ruckus desktop window: {error}");
-            cx.quit();
-        }
-        cx.activate(true);
-    });
+            }) {
+                eprintln!("Could not open the Ruckus desktop window: {error}");
+                cx.quit();
+            }
+            cx.activate(true);
+        });
 }
 
 struct Desktop {
